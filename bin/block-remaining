@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Minutes left in the current Claude 5-hour usage window.
+
+The window is rolling: it starts at your first request when no window is
+active, and runs five hours from that moment. It is NOT aligned to clock
+hours. Flooring the start to the hour (as at least one popular tool does)
+reports the reset up to 59 minutes early — telling you that you are about to
+be throttled when you are not.
+
+Cached for 60s; reads only transcripts touched in the last 11 hours.
+"""
+import json, glob, os, time, datetime, sys
+
+CACHE = "/tmp/.loadline-block"
+WINDOW = 5 * 3600
+
+def compute():
+    now = time.time()
+    stamps = []
+    for f in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
+        try:
+            if os.path.getmtime(f) < now - 11 * 3600:
+                continue
+            with open(f, errors="ignore") as fh:
+                for line in fh:
+                    i = line.find('"timestamp":"')
+                    if i < 0:
+                        continue
+                    s = line[i + 13:i + 37]
+                    try:
+                        stamps.append(datetime.datetime.fromisoformat(
+                            s.replace("Z", "+00:00")).timestamp())
+                    except ValueError:
+                        pass
+        except OSError:
+            continue
+    if not stamps:
+        return None
+    stamps.sort()
+    start = None
+    for t in stamps:                      # a new window opens when the old one has lapsed
+        if start is None or t >= start + WINDOW:
+            start = t
+    return start
+
+try:
+    st = json.load(open(CACHE))
+    if time.time() - st["at"] < 60:
+        start = st["start"]
+    else:
+        raise ValueError
+except Exception:
+    start = compute()
+    try:
+        json.dump({"at": time.time(), "start": start}, open(CACHE, "w"))
+    except OSError:
+        pass
+
+if not start:
+    sys.exit(0)
+left = int((start + WINDOW - time.time()) // 60)
+if left < 0:
+    sys.exit(0)
+print(f"{left//60}h {left%60}m" if left >= 60 else f"{left}m")

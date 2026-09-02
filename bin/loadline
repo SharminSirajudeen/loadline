@@ -65,9 +65,14 @@ frame=$(printf '%s' "$SPIN" | cut -c $((n+1)))
 
 DIM=$'\033[2m'; B=$'\033[1m'; R=$'\033[0m'
 CM=$'\033[38;5;39m'; CD=$'\033[38;5;33m'; CG=$'\033[38;5;150m'
+blk=""
+_bd=$(dirname "$0")
+[ -x "$_bd/block-remaining" ] && blk=$("$_bd/block-remaining" 2>/dev/null)
+
 out=""
 [ -n "$model" ]  && out+="${CM}${model}${R}"
 [ -n "$base" ]   && out+=" ${DIM}·${R} ${CD}${base}${R}"
 [ -n "$branch" ] && out+=" ${DIM}·${R} ${CG}⎇ ${branch}${R}"
-out+=" ${DIM}·${R} ${CC}${bar}${R} ${DIM}|${R} ${CC}🧠 ${grouped}${R} ${B}${CC}(${pct}%)${R} ${DIM}${frame}${R}"
+[ -n "$blk" ] && out+=" ${DIM}·${R} ${DIM}session block (${blk} left)${R}"
+out+=" ${DIM}|${R} ${CC}🧠 ${grouped}${R} ${B}${CC}(${pct}%)${R} ${DIM}${frame}${R}"
 printf '%s' "$out"
