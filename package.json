@@ -1,0 +1,12 @@
+{
+  "name": "loadline",
+  "version": "0.1.0",
+  "description": "A Claude Code status line that shows how full your context actually is — with the correct window for 1M-context models.",
+  "bin": { "loadline": "bin/loadline" },
+  "files": ["bin/loadline", "README.md", "LICENSE"],
+  "keywords": ["claude", "claude-code", "statusline", "context-window", "cli", "anthropic"],
+  "repository": { "type": "git", "url": "git+https://github.com/SharminSirajudeen/loadline.git" },
+  "license": "MIT",
+  "author": "Sharmin Sirajudeen",
+  "engines": { "node": ">=14" }
+}

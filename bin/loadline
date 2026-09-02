@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# loadline — the load line for your Claude Code context window.
+#
+# A ship's Plimsoll line marks how deep it may safely sit in the water. This
+# marks how full your context is. It is the number that actually stops you:
+# you cannot spend your way past a full context window, and on a subscription
+# you cannot spend your way past the rate-limit window either.
+#
+# Reads only the transcript Claude Code already writes. No API key, no network,
+# no dependencies beyond jq and awk.
+set -u
+input=$(cat)
+
+j() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
+
+model=$(j '.model.display_name')
+dir=$(j '.workspace.current_dir')
+tp=$(j '.transcript_path')
+base=${dir##*/}
+branch=$(git -C "${dir:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+# Context window: Claude Code reports the model name; 1M-context models must not
+# be measured against a 200K window or the percentage is meaningless (a tool that
+# assumes 200K reports 312% where the true figure is 62%).
+case "$model" in
+  *1M*|*Opus\ 5*|*Sonnet\ 5*|*Fable*) WINDOW=1000000 ;;
+  *Haiku*)                            WINDOW=200000  ;;
+  *)                                  WINDOW=200000  ;;
+esac
+[ -n "${LOADLINE_WINDOW:-}" ] && WINDOW=$LOADLINE_WINDOW
+
+# Current context = the most recent assistant turn's input + cache. Read only the
+# tail of the transcript so cost is O(1) rather than O(session length).
+ctx=0
+if [ -n "$tp" ] && [ -r "$tp" ]; then
+  ctx=$(tail -c 400000 "$tp" 2>/dev/null | grep '"usage"' | tail -1 | jq -r '
+    (.message.usage // {}) |
+    ((.input_tokens // 0) + (.cache_read_input_tokens // 0)
+     + (.cache_creation_input_tokens // 0))' 2>/dev/null)
+  case "$ctx" in ''|*[!0-9]*) ctx=0 ;; esac
+fi
+
+pct=$(awk -v c="$ctx" -v w="$WINDOW" 'BEGIN{printf "%d", (w>0? c*100/w : 0)}')
+human=$(awk -v n="$ctx" 'BEGIN{
+  if (n>=1e6) printf "%.1fM", n/1e6; else if (n>=1e3) printf "%.0fk", n/1e3; else printf "%d", n }')
+
+# Green under 50%, yellow under 80%, red above — the thresholds where a long
+# session starts degrading before it hard-fails.
+if   [ "$pct" -lt 50 ]; then CC=$'\033[38;5;114m'
+elif [ "$pct" -lt 80 ]; then CC=$'\033[38;5;221m'
+else                         CC=$'\033[38;5;203m'; fi
+
+# A 10-cell load line. The hull fills as the context does.
+bar=""
+filled=$(( pct / 10 )); [ "$filled" -gt 10 ] && filled=10
+for i in $(seq 1 10); do
+  if [ "$i" -le "$filled" ]; then bar="${bar}█"; else bar="${bar}░"; fi
+done
+
+DIM=$'\033[2m'; B=$'\033[1m'; R=$'\033[0m'
+CM=$'\033[38;5;39m'; CD=$'\033[38;5;33m'; CG=$'\033[38;5;150m'
+out=""
+[ -n "$model" ]  && out+="${CM}${model}${R}"
+[ -n "$base" ]   && out+=" ${DIM}·${R} ${CD}${base}${R}"
+[ -n "$branch" ] && out+=" ${DIM}·${R} ${CG}⎇ ${branch}${R}"
+out+=" ${DIM}·${R} ${CC}${bar}${R} ${B}${CC}${pct}%${R} ${DIM}${human}${R}"
+printf '%s' "$out"
