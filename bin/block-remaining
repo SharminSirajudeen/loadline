@@ -103,36 +103,46 @@ def read_anchor():
     return a
 
 
-if len(sys.argv) > 1 and sys.argv[1] == "--anchor":
-    # Teach it the truth: block-remaining --anchor "3h 56m"   (from /usage)
-    text = " ".join(sys.argv[2:])
-    m = re.search(r"(?:(\d+)\s*hr?)?\D*(\d+)\s*min", text) or re.search(r"(?:(\d+)h )?(\d+)m", text)
+if len(sys.argv) > 1 and sys.argv[1] in ("--anchor", "--reset"):
+    # /usage prints an ABSOLUTE reset time ("Resets 8:40pm"). That is the exact
+    # fact and it does not decay, unlike a "3h 52m remaining" reading which is
+    # stale the moment you read it. Take the clock time:
+    #   block-remaining --reset 8:40pm
+    text = " ".join(sys.argv[2:]).strip().lower()
+    m = re.match(r"(\d{1,2})[:.](\d{2})\s*(am|pm)?$", text)
     if not m:
-        print('usage: block-remaining --anchor "3 hr 56 min"', file=sys.stderr)
+        print('usage: block-remaining --reset 8:40pm', file=sys.stderr)
         sys.exit(2)
-    # /usage reports whole minutes, almost certainly floored: "3 hr 56 min"
-    # means somewhere in [3:56:00, 3:57:00). Take the midpoint so the anchor
-    # is centred rather than pinned to the earliest possible instant, which
-    # would make every later reading a minute short.
-    remaining = (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60
-    # Store the READING, not a derived start time. Three readings taken minutes
-    # apart showed the counter falling faster than the wall clock (8 minutes
-    # lost over 6m33s of real time), so `start + WINDOW - now` cannot produce
-    # it and no start time exists to store.
-    json.dump({"remaining": remaining, "set_at": time.time()}, open(ANCHOR, "w"))
-    print(f"recorded: {int(remaining//3600)}h {int(remaining%3600//60)}m "
-          f"as of {datetime.datetime.now().strftime('%H:%M')}")
-    print("read /usage immediately before running this: the anchor is only as "
-          "fresh as the number you gave it, and a stale reading places the "
-          "start late, which is the very error this exists to remove.",
-          file=sys.stderr)
+    hh, mm, ap = int(m.group(1)), int(m.group(2)), m.group(3)
+    if ap == "pm" and hh != 12:
+        hh += 12
+    elif ap == "am" and hh == 12:
+        hh = 0
+    now_dt = datetime.datetime.now()
+    reset = now_dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if reset <= now_dt:                       # already past today, so it is tomorrow
+        reset += datetime.timedelta(days=1)
+    json.dump({"reset": reset.timestamp(), "set_at": time.time()}, open(ANCHOR, "w"))
+    left = int(round((reset.timestamp() - time.time()) / 60))
+    print(f"reset {reset.strftime('%H:%M')} — {left//60}h {left%60}m left, "
+          f"window opened {(reset - datetime.timedelta(seconds=WINDOW)).strftime('%H:%M')}")
     sys.exit(0)
+
+
+def read_anchor():
+    """The absolute reset time you gave us. Exact until it passes."""
+    try:
+        a = json.load(open(ANCHOR))
+    except Exception:
+        return None
+    return a["reset"] if time.time() < a["reset"] else None
+
 
 anchored = read_anchor()
 if anchored:
-    r = anchored["remaining"]
-    print(f"{int(r//3600)}h {int(r%3600//60)}m as of "
-          f"{datetime.datetime.fromtimestamp(anchored['set_at']).strftime('%H:%M')}")
+    left = int(round((anchored - time.time()) / 60))
+    span = f"{left//60}h {left%60}m" if left >= 60 else f"{left}m"
+    print(f"{span} \u2192{datetime.datetime.fromtimestamp(anchored).strftime('%H:%M')}")
     sys.exit(0)
 
 try:
