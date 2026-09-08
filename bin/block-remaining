@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minutes left in the current Claude 5-hour usage window.
+"""Minutes left in the current Claude 5-hour usage window, and when it opened.
 
 The window is rolling: it starts at your first request when no window is
 active, and runs five hours from that moment. It is NOT aligned to clock
@@ -7,17 +7,48 @@ hours. Flooring the start to the hour (as at least one popular tool does)
 reports the reset up to 59 minutes early — telling you that you are about to
 be throttled when you are not.
 
-Cached for 60s; reads only transcripts touched in the last 11 hours.
+The bias this file exists to avoid runs the other way too. A transcript stamp
+records when a message LANDED, not when its request was SENT, so taking the
+first message after a rollover as the new window's start places it late, and
+late means claiming time you do not have. When usage runs right up to a
+rollover the next window opens AT the boundary, so that is what we use;
+only a real idle gap moves the start to the first message after it.
+
+Reads every profile on this machine, since the window is per account.
+
+Prints "4h 21m @15:52" so the estimate can be checked against /usage rather
+than trusted. Cached for 60s; reads transcripts touched in the last 11 hours.
+
+MEASURED against /usage on 2026-09-08: this said 4h 11m when the truth was
+4h 0m. The gap was not a bug in the maths. The window had opened ten minutes
+before ANY local transcript stamp, because cloud sessions, claude.ai and the
+mobile app bill the same account and write nothing to ~/.claude/projects.
+
+That error can only ever run one way: unseen usage makes the window look
+younger than it is, never older. So this is an UPPER BOUND, printed with a
+leading "<=" so it is never mistaken for the real number. Check /usage when
+it matters.
 """
 import json, glob, os, time, datetime, sys
 
 CACHE = "/tmp/.loadline-block"
 WINDOW = 5 * 3600
+# A gap longer than this across a rollover is a real break, not continuous use.
+IDLE = 15 * 60
 
 def compute():
     now = time.time()
     stamps = []
-    for f in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
+    # Every profile on this machine, not just the default one. The usage window
+    # is per account, so a session run under ~/.claude-work counts against the
+    # same five hours and used to be invisible here.
+    roots = ["~/.claude/projects", "~/.claude-work/projects"]
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        roots.append(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects"))
+    files = []
+    for r in roots:
+        files.extend(glob.glob(os.path.join(os.path.expanduser(r), "*", "*.jsonl")))
+    for f in set(files):
         try:
             if os.path.getmtime(f) < now - 11 * 3600:
                 continue
@@ -38,9 +69,19 @@ def compute():
         return None
     stamps.sort()
     start = None
-    for t in stamps:                      # a new window opens when the old one has lapsed
-        if start is None or t >= start + WINDOW:
+    last = None
+    for t in stamps:
+        if start is None:
             start = t
+        elif t >= start + WINDOW:
+            # The old window lapsed. If work was still going as it lapsed, the
+            # next request landed on the boundary and that is where the new
+            # window opened — using this message's stamp instead would push the
+            # start late and overstate what is left. A real idle gap is
+            # different: there the window genuinely opened at this message.
+            boundary = start + WINDOW
+            start = boundary if (last is not None and t - last <= IDLE) else t
+        last = t
     return start
 
 try:
@@ -61,4 +102,11 @@ if not start:
 left = int((start + WINDOW - time.time()) // 60)
 if left < 0:
     sys.exit(0)
-print(f"{left//60}h {left%60}m" if left >= 60 else f"{left}m")
+span = f"{left//60}h {left%60}m" if left >= 60 else f"{left}m"
+# "<=" because usage this machine cannot see only ever shortens the real
+# window. Overstating time left is the one error that gets you throttled
+# mid-thought, so the bound leans the safe way and says which way it leans.
+# The start time is the whole point: it makes the number falsifiable at a
+# glance. If it says 15:52 and you know you were working at 15:41, the tool
+# has told on itself.
+print(f"<={span} @{datetime.datetime.fromtimestamp(start).strftime('%H:%M')}")
