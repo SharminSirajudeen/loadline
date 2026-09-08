@@ -87,14 +87,20 @@ def compute():
     return start
 
 def read_anchor():
-    """A window start you told us, which beats anything we can infer."""
+    """The last /usage reading you gave us, with its age.
+
+    Deliberately NOT extrapolated. The counter does not track the wall clock,
+    so subtracting elapsed time would invent precision we do not have. Showing
+    the reading and its age is the whole truth available.
+    """
     try:
         a = json.load(open(ANCHOR))
     except Exception:
         return None
-    # An anchor is only good for the window it described. Once that window has
-    # run out, inference takes over again rather than quietly extrapolating.
-    return a["start"] if time.time() < a["start"] + WINDOW else None
+    age = time.time() - a["set_at"]
+    if age > 3 * 3600:          # older than this and it tells you nothing
+        return None
+    return a
 
 
 if len(sys.argv) > 1 and sys.argv[1] == "--anchor":
@@ -108,10 +114,14 @@ if len(sys.argv) > 1 and sys.argv[1] == "--anchor":
     # means somewhere in [3:56:00, 3:57:00). Take the midpoint so the anchor
     # is centred rather than pinned to the earliest possible instant, which
     # would make every later reading a minute short.
-    remaining = (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60 + 30
-    start = time.time() - (WINDOW - remaining)
-    json.dump({"start": start, "set_at": time.time()}, open(ANCHOR, "w"))
-    print(f"anchored: window opened {datetime.datetime.fromtimestamp(start).strftime('%H:%M:%S')}")
+    remaining = (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60
+    # Store the READING, not a derived start time. Three readings taken minutes
+    # apart showed the counter falling faster than the wall clock (8 minutes
+    # lost over 6m33s of real time), so `start + WINDOW - now` cannot produce
+    # it and no start time exists to store.
+    json.dump({"remaining": remaining, "set_at": time.time()}, open(ANCHOR, "w"))
+    print(f"recorded: {int(remaining//3600)}h {int(remaining%3600//60)}m "
+          f"as of {datetime.datetime.now().strftime('%H:%M')}")
     print("read /usage immediately before running this: the anchor is only as "
           "fresh as the number you gave it, and a stale reading places the "
           "start late, which is the very error this exists to remove.",
@@ -119,17 +129,20 @@ if len(sys.argv) > 1 and sys.argv[1] == "--anchor":
     sys.exit(0)
 
 anchored = read_anchor()
+if anchored:
+    r = anchored["remaining"]
+    print(f"{int(r//3600)}h {int(r%3600//60)}m as of "
+          f"{datetime.datetime.fromtimestamp(anchored['set_at']).strftime('%H:%M')}")
+    sys.exit(0)
 
 try:
-    if anchored:
-        raise ValueError            # an anchor outranks the cache
     st = json.load(open(CACHE))
     if time.time() - st["at"] < 60:
         start = st["start"]
     else:
         raise ValueError
 except Exception:
-    start = anchored or compute()
+    start = compute()
     try:
         json.dump({"at": time.time(), "start": start}, open(CACHE, "w"))
     except OSError:
@@ -151,5 +164,5 @@ span = f"{left//60}h {left%60}m" if left >= 60 else f"{left}m"
 # glance. If it says 15:52 and you know you were working at 15:41, the tool
 # has told on itself.
 # No "<=" when anchored: you gave us the real number, so this one is real.
-lead = "" if anchored else "<="
+lead = "<="
 print(f"{lead}{span} @{datetime.datetime.fromtimestamp(start).strftime('%H:%M')}")
