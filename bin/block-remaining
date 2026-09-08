@@ -29,9 +29,11 @@ younger than it is, never older. So this is an UPPER BOUND, printed with a
 leading "<=" so it is never mistaken for the real number. Check /usage when
 it matters.
 """
-import json, glob, os, time, datetime, sys
+import json, glob, os, re, time, datetime, sys
 
 CACHE = "/tmp/.loadline-block"
+# Survives reboots and /tmp cleaning, unlike the 60s cache.
+ANCHOR = os.path.expanduser("~/.claude/.loadline-anchor")
 WINDOW = 5 * 3600
 # A gap longer than this across a rollover is a real break, not continuous use.
 IDLE = 15 * 60
@@ -84,14 +86,42 @@ def compute():
         last = t
     return start
 
+def read_anchor():
+    """A window start you told us, which beats anything we can infer."""
+    try:
+        a = json.load(open(ANCHOR))
+    except Exception:
+        return None
+    # An anchor is only good for the window it described. Once that window has
+    # run out, inference takes over again rather than quietly extrapolating.
+    return a["start"] if time.time() < a["start"] + WINDOW else None
+
+
+if len(sys.argv) > 1 and sys.argv[1] == "--anchor":
+    # Teach it the truth: block-remaining --anchor "3h 56m"   (from /usage)
+    text = " ".join(sys.argv[2:])
+    m = re.search(r"(?:(\d+)\s*hr?)?\D*(\d+)\s*min", text) or re.search(r"(?:(\d+)h )?(\d+)m", text)
+    if not m:
+        print('usage: block-remaining --anchor "3 hr 56 min"', file=sys.stderr)
+        sys.exit(2)
+    remaining = (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60
+    start = time.time() - (WINDOW - remaining)
+    json.dump({"start": start, "set_at": time.time()}, open(ANCHOR, "w"))
+    print(f"anchored: window opened {datetime.datetime.fromtimestamp(start).strftime('%H:%M:%S')}")
+    sys.exit(0)
+
+anchored = read_anchor()
+
 try:
+    if anchored:
+        raise ValueError            # an anchor outranks the cache
     st = json.load(open(CACHE))
     if time.time() - st["at"] < 60:
         start = st["start"]
     else:
         raise ValueError
 except Exception:
-    start = compute()
+    start = anchored or compute()
     try:
         json.dump({"at": time.time(), "start": start}, open(CACHE, "w"))
     except OSError:
@@ -109,4 +139,6 @@ span = f"{left//60}h {left%60}m" if left >= 60 else f"{left}m"
 # The start time is the whole point: it makes the number falsifiable at a
 # glance. If it says 15:52 and you know you were working at 15:41, the tool
 # has told on itself.
-print(f"<={span} @{datetime.datetime.fromtimestamp(start).strftime('%H:%M')}")
+# No "<=" when anchored: you gave us the real number, so this one is real.
+lead = "" if anchored else "<="
+print(f"{lead}{span} @{datetime.datetime.fromtimestamp(start).strftime('%H:%M')}")
