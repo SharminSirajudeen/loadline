@@ -104,10 +104,18 @@ if len(sys.argv) > 1 and sys.argv[1] == "--anchor":
     if not m:
         print('usage: block-remaining --anchor "3 hr 56 min"', file=sys.stderr)
         sys.exit(2)
-    remaining = (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60
+    # /usage reports whole minutes, almost certainly floored: "3 hr 56 min"
+    # means somewhere in [3:56:00, 3:57:00). Take the midpoint so the anchor
+    # is centred rather than pinned to the earliest possible instant, which
+    # would make every later reading a minute short.
+    remaining = (int(m.group(1) or 0) * 60 + int(m.group(2))) * 60 + 30
     start = time.time() - (WINDOW - remaining)
     json.dump({"start": start, "set_at": time.time()}, open(ANCHOR, "w"))
     print(f"anchored: window opened {datetime.datetime.fromtimestamp(start).strftime('%H:%M:%S')}")
+    print("read /usage immediately before running this: the anchor is only as "
+          "fresh as the number you gave it, and a stale reading places the "
+          "start late, which is the very error this exists to remove.",
+          file=sys.stderr)
     sys.exit(0)
 
 anchored = read_anchor()
@@ -129,9 +137,12 @@ except Exception:
 
 if not start:
     sys.exit(0)
-left = int((start + WINDOW - time.time()) // 60)
-if left < 0:
+# Round, do not floor. Flooring loses up to 59 seconds and made this read a
+# minute below /usage for most of every minute.
+secs = start + WINDOW - time.time()
+if secs < 0:
     sys.exit(0)
+left = int(round(secs / 60))
 span = f"{left//60}h {left%60}m" if left >= 60 else f"{left}m"
 # "<=" because usage this machine cannot see only ever shortens the real
 # window. Overstating time left is the one error that gets you throttled
